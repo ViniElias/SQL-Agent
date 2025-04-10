@@ -1,7 +1,7 @@
-from smolagents import CodeAgent,DuckDuckGoSearchTool, HfApiModel,load_tool,tool
-import datetime
+from smolagents import CodeAgent, DuckDuckGoSearchTool, HfApiModel, load_tool, tool
 import requests
 import pytz
+from sqlalchemy import Column, Float, Integer, MetaData, String, Table, create_engine, insert, inspect, text
 import yaml
 from tools.final_answer import FinalAnswerTool
 import os
@@ -11,33 +11,56 @@ from Gradio_UI import GradioUI
 
 os.environ["HF_TOKEN"] = HF_TOKEN
 
+# Criação do BD na memória
+engine = create_engine("sqlite:///:memory:")
+metadata_obj = MetaData()
 
-# Below is an example of a tool that does nothing. Amaze us with your creativity !
+# Criação da tabela e colunas
+table_name = "receipts"
+receipts = Table(
+    table_name,
+    metadata_obj,
+    Column("receipt_id", Integer, primary_key=True),
+    Column("customer_name", String(16)),
+    Column("price", Float)
+)
+metadata_obj.create_all(engine)
+
+rows = [
+    {"receipt_id": 1, "customer_name": "Alan Payne", "price": 12.06},
+    {"receipt_id": 2, "customer_name": "Alex Mason", "price": 23.86},
+    {"receipt_id": 3, "customer_name": "Woodrow Wilson", "price": 53.43},
+    {"receipt_id": 4, "customer_name": "Margaret James", "price": 21.11},
+]
+for row in rows:
+    stmt = insert(receipts).values(**row)
+    with engine.begin() as connection:
+        cursor = connection.execute(stmt)
+
+inspector = inspect(engine)
+columns_info = [(col["name"], col["type"]) for col in inspector.get_columns("receipts")]
+
+table_description = "Columns:\n" + "\n".join([f"  - {name}: {col_type}" for name, col_type in columns_info])
+print(table_description)
+
 @tool
-def my_custom_tool(arg1:str, arg2:int)-> str: #it's import to specify the return type
-    #Keep this format for the description / args / args description but feel free to modify the tool
-    """A tool that does nothing yet
-    Args:
-        arg1: the first argument
-        arg2: the second argument
+def sql_engine(query: str) -> str:
     """
-    return "What magic will you build ?"
-
-@tool
-def get_current_time_in_timezone(timezone: str) -> str:
-    """A tool that fetches the current local time in a specified timezone.
+    Allows you to perform SQL queries on the table. Returns a string representation of the result.
+    The table is named 'receipts'. Its description is as follows:
+        Columns:
+        - receipt_id: INTEGER
+        - customer_name: VARCHAR(16)
+        - price: FLOAT
     Args:
-        timezone: A string representing a valid timezone (e.g., 'America/New_York').
+        query: The query to perform. This should be correct SQL.
     """
-    try:
-        # Create timezone object
-        tz = pytz.timezone(timezone)
-        # Get current time in that timezone
-        local_time = datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
-        return f"The current local time in {timezone} is: {local_time}"
-    except Exception as e:
-        return f"Error fetching time for timezone '{timezone}': {str(e)}"
-
+    output = ""
+    with engine.connect() as con:
+        rows = con.execute(text(query))
+        for row in rows:
+            output += "\n" + str(row)
+    return output
 
 final_answer = FinalAnswerTool()
 
@@ -51,7 +74,6 @@ model_id='Qwen/Qwen2.5-Coder-32B-Instruct',# it is possible that this model may 
 custom_role_conversions=None,
 )
 
-
 # Import tool from Hub
 image_generation_tool = load_tool("agents-course/text-to-image", trust_remote_code=True)
 
@@ -60,7 +82,7 @@ with open("prompts.yaml", 'r') as stream:
     
 agent = CodeAgent(
     model=model,
-    tools=[DuckDuckGoSearchTool(), image_generation_tool], ## add your tools here (don't remove final answer)
+    tools=[DuckDuckGoSearchTool(), sql_engine, image_generation_tool], ## add your tools here (don't remove final answer)
     max_steps=6,
     verbosity_level=1,
     grammar=None,
@@ -70,5 +92,5 @@ agent = CodeAgent(
     prompt_templates=prompt_templates
 )
 
-
 GradioUI(agent).launch()
+# agent.run("Can you give me the name of the client who got the most expensive receipt?")
