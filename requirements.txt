@@ -3,3 +3,4 @@ smolagents
 requests
 duckduckgo_search
 pandas
+mysql-connector-python>=8.0.0

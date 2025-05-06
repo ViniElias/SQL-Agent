@@ -2,6 +2,9 @@
     "tools": [
         "web_search",
         "visit_webpage",
+        "mysql_connect",
+        "mysql_execute",
+        "mysql_fetch",
         "final_answer"
     ],
     "model": {

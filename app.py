@@ -1,9 +1,10 @@
-from smolagents import CodeAgent,DuckDuckGoSearchTool, HfApiModel,load_tool,tool
-import datetime
-import requests
-import pytz
+from smolagents import CodeAgent, DuckDuckGoSearchTool, HfApiModel, load_tool, tool
 import yaml
 from tools.final_answer import FinalAnswerTool
+from tools.mysqltools import (
+    mysql_connect, mysql_execute, mysql_fetch,
+    mysql_connect_tool, mysql_exec_tool, mysql_fetch_tool
+)
 import os
 from hf_token import HF_TOKEN
 
@@ -11,56 +12,40 @@ from Gradio_UI import GradioUI
 
 os.environ["HF_TOKEN"] = HF_TOKEN
 
-
-# Below is an example of a tool that does nothing. Amaze us with your creativity !
-@tool
-def my_custom_tool(arg1:str, arg2:int)-> str: #it's import to specify the return type
-    #Keep this format for the description / args / args description but feel free to modify the tool
-    """A tool that does nothing yet
-    Args:
-        arg1: the first argument
-        arg2: the second argument
-    """
-    return "What magic will you build ?"
-
-@tool
-def get_current_time_in_timezone(timezone: str) -> str:
-    """A tool that fetches the current local time in a specified timezone.
-    Args:
-        timezone: A string representing a valid timezone (e.g., 'America/New_York').
-    """
-    try:
-        # Create timezone object
-        tz = pytz.timezone(timezone)
-        # Get current time in that timezone
-        local_time = datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
-        return f"The current local time in {timezone} is: {local_time}"
-    except Exception as e:
-        return f"Error fetching time for timezone '{timezone}': {str(e)}"
-
-
 final_answer = FinalAnswerTool()
 
-# If the agent does not answer, the model is overloaded, please use another model or the following Hugging Face Endpoint that also contains qwen2.5 coder:
-# model_id='https://pflgm2locj2t89co.us-east-1.aws.endpoints.huggingface.cloud' 
-
 model = HfApiModel(
-max_tokens=2096,
-temperature=0.5,
-model_id='Qwen/Qwen2.5-Coder-32B-Instruct',# it is possible that this model may be overloaded
-custom_role_conversions=None,
+    max_tokens=2096,
+    temperature=0.5,
+    model_id='Qwen/Qwen2.5-Coder-32B-Instruct',
+    custom_role_conversions=None,
 )
 
-
-# Import tool from Hub
+# Import image generation tool
 image_generation_tool = load_tool("agents-course/text-to-image", trust_remote_code=True)
 
 with open("prompts.yaml", 'r') as stream:
     prompt_templates = yaml.safe_load(stream)
-    
+
+def execute_sql_script(conn, filepath):
+    """Reads and executes SQL commands from a file"""
+    with open(filepath, 'r') as file:
+        sql_script = file.read()
+        for statement in sql_script.split(';'):
+            stmt = statement.strip()
+            if stmt:
+                mysql_execute(conn, stmt)
+
 agent = CodeAgent(
     model=model,
-    tools=[DuckDuckGoSearchTool(), image_generation_tool], ## add your tools here (don't remove final answer)
+    tools=[
+        DuckDuckGoSearchTool(),
+        image_generation_tool,
+        mysql_connect_tool,
+        mysql_exec_tool,
+        mysql_fetch_tool,
+        final_answer
+    ],
     max_steps=6,
     verbosity_level=1,
     grammar=None,
@@ -70,5 +55,16 @@ agent = CodeAgent(
     prompt_templates=prompt_templates
 )
 
+# Conexão com o banco
+conn = mysql_connect("localhost", "root", "senha123", "escola")
 
+# Scripts para criação da estrutura e dados iniciais
+execute_sql_script(conn, "setup_escola.sql")
+
+# Executar comandos e buscar resultados
+mysql_execute(conn, "INSERT INTO aluno (nome,idade) VALUES (%s,%s)", ("Maria", 22))
+rows = mysql_fetch(conn, "SELECT nome, idade FROM aluno")
+print(rows)
+
+# Launch UI
 GradioUI(agent).launch()
