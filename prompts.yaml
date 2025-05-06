@@ -319,3 +319,12 @@
   "report": |-
     Here is the final answer from your managed agent '{{name}}':
     {{final_answer}}
+final_answer:
+  pre_messages: |-
+    ### RESPOSTA FINAL ###
+    {answer}
+    
+  post_messages: |-
+    
+    ### FIM DA RESPOSTA ###
+    Esta conclusão encerra a resposta.
