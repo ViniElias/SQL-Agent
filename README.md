@@ -16,3 +16,27 @@ tags:
 ---
 
 Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
+
+## Passos para executar
+### Crie o ambiente virtual
+
+```bash
+python -m venv venv
+venv\Scripts\activate     # Windows
+```
+
+### Instale as dependencias
+
+```bash
+pip install -r requirements.txt
+```
+
+### Instale o Ollama localmente e rode o comando 
+```bash
+ollama pull qwen2.5:3b
+```
+
+### Inicie o agente
+```bash
+python app.py
+```

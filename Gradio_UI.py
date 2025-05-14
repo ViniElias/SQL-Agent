@@ -24,14 +24,13 @@ from smolagents.agents import ActionStep, MultiStepAgent
 from smolagents.memory import MemoryStep
 from smolagents.utils import _is_package_available
 
+
 def pull_messages_from_step(
     step_log: MemoryStep,
 ):
     """Extract ChatMessage objects from agent steps with proper nesting"""
     import gradio as gr
 
-    # Define default step_number
-    step_number = ""
     if isinstance(step_log, ActionStep):
         # Output the step number
         step_number = f"Step {step_log.step_number}" if step_log.step_number is not None else ""
@@ -39,27 +38,90 @@ def pull_messages_from_step(
 
         # First yield the thought/reasoning from the LLM
         if hasattr(step_log, "model_output") and step_log.model_output is not None:
+            # Clean up the LLM output
             model_output = step_log.model_output.strip()
-            # Cleanup end_code tags
-            model_output = re.sub(r"```\s*<end_code>", "```", model_output)
-            model_output = re.sub(r"<end_code>\s*```", "```", model_output)
-            model_output = re.sub(r"```\s*\n\s*<end_code>", "```", model_output)
+            # Remove any trailing <end_code> and extra backticks, handling multiple possible formats
+            model_output = re.sub(r"```\s*<end_code>", "```", model_output)  # handles ```<end_code>
+            model_output = re.sub(r"<end_code>\s*```", "```", model_output)  # handles <end_code>```
+            model_output = re.sub(r"```\s*\n\s*<end_code>", "```", model_output)  # handles ```\n<end_code>
+            model_output = model_output.strip()
             yield gr.ChatMessage(role="assistant", content=model_output)
 
-    step_footnote = f"{step_number}"
-    if hasattr(step_log, "input_token_count") and hasattr(step_log, "output_token_count"):
-        token_str = (
-            f" | Input-tokens:{step_log.input_token_count:,} | Output-tokens:{step_log.output_token_count:,}"
-        )
-        step_footnote += token_str
-    if hasattr(step_log, "duration"):
-        step_duration = (
-            f" | Duration: {round(float(step_log.duration), 2)}" if step_log.duration is not None else ""
-        )
-        step_footnote += step_duration
-    step_footnote = f"""<span style=\"color: #bbbbc2; font-size: 12px;\">{step_footnote}</span> """
-    yield gr.ChatMessage(role="assistant", content=step_footnote)
-    yield gr.ChatMessage(role="assistant", content="-----")
+        # For tool calls, create a parent message
+        if hasattr(step_log, "tool_calls") and step_log.tool_calls is not None:
+            first_tool_call = step_log.tool_calls[0]
+            used_code = first_tool_call.name == "python_interpreter"
+            parent_id = f"call_{len(step_log.tool_calls)}"
+
+            # Tool call becomes the parent message with timing info
+            # First we will handle arguments based on type
+            args = first_tool_call.arguments
+            if isinstance(args, dict):
+                content = str(args.get("answer", str(args)))
+            else:
+                content = str(args).strip()
+
+            if used_code:
+                # Clean up the content by removing any end code tags
+                content = re.sub(r"```.*?\n", "", content)  # Remove existing code blocks
+                content = re.sub(r"\s*<end_code>\s*", "", content)  # Remove end_code tags
+                content = content.strip()
+                if not content.startswith("```python"):
+                    content = f"```python\n{content}\n```"
+
+            parent_message_tool = gr.ChatMessage(
+                role="assistant",
+                content=content,
+                metadata={
+                    "title": f"🛠️ Used tool {first_tool_call.name}",
+                    "id": parent_id,
+                    "status": "pending",
+                },
+            )
+            yield parent_message_tool
+
+            # Nesting execution logs under the tool call if they exist
+            if hasattr(step_log, "observations") and (
+                step_log.observations is not None and step_log.observations.strip()
+            ):  # Only yield execution logs if there's actual content
+                log_content = step_log.observations.strip()
+                if log_content:
+                    log_content = re.sub(r"^Execution logs:\s*", "", log_content)
+                    yield gr.ChatMessage(
+                        role="assistant",
+                        content=f"{log_content}",
+                        metadata={"title": "📝 Execution Logs", "parent_id": parent_id, "status": "done"},
+                    )
+
+            # Nesting any errors under the tool call
+            if hasattr(step_log, "error") and step_log.error is not None:
+                yield gr.ChatMessage(
+                    role="assistant",
+                    content=str(step_log.error),
+                    metadata={"title": "💥 Error", "parent_id": parent_id, "status": "done"},
+                )
+
+            # Update parent message metadata to done status without yielding a new message
+            parent_message_tool.metadata["status"] = "done"
+
+        # Handle standalone errors but not from tool calls
+        elif hasattr(step_log, "error") and step_log.error is not None:
+            yield gr.ChatMessage(role="assistant", content=str(step_log.error), metadata={"title": "💥 Error"})
+
+        # Calculate duration and token information
+        step_footnote = f"{step_number}"
+        if hasattr(step_log, "input_token_count") and hasattr(step_log, "output_token_count"):
+            token_str = (
+                f" | Input-tokens:{step_log.input_token_count:,} | Output-tokens:{step_log.output_token_count:,}"
+            )
+            step_footnote += token_str
+        if hasattr(step_log, "duration"):
+            step_duration = f" | Duration: {round(float(step_log.duration), 2)}" if step_log.duration else None
+            step_footnote += step_duration
+        step_footnote = f"""<span style="color: #bbbbc2; font-size: 12px;">{step_footnote}</span> """
+        yield gr.ChatMessage(role="assistant", content=f"{step_footnote}")
+        yield gr.ChatMessage(role="assistant", content="-----")
+
 
 def stream_to_gradio(
     agent,
@@ -78,6 +140,7 @@ def stream_to_gradio(
     total_output_tokens = 0
 
     for step_log in agent.run(task, stream=True, reset=reset_agent_memory, additional_args=additional_args):
+        # Track tokens if model provides them
         if hasattr(agent.model, "last_input_token_count"):
             total_input_tokens += agent.model.last_input_token_count
             total_output_tokens += agent.model.last_output_token_count
@@ -85,32 +148,18 @@ def stream_to_gradio(
                 step_log.input_token_count = agent.model.last_input_token_count
                 step_log.output_token_count = agent.model.last_output_token_count
 
-        for message in pull_messages_from_step(step_log):
-            if hasattr(message, "content") and message.content:
-                yield gr.ChatMessage(role=message.role, content=message.content)
+        for message in pull_messages_from_step(
+            step_log,
+        ):
+            yield message
 
-    final_answer = step_log
-    if hasattr(final_answer, "model_output"):
-        final_output_text = final_answer.model_output.strip()
-        yield gr.ChatMessage(
-            role="assistant",
-            content=f"**Final answer:**\n{final_output_text}",
-        )
-    else:
-        final_answer = handle_agent_output_types(final_answer)
-        if isinstance(final_answer, AgentText):
-            yield gr.ChatMessage(role="assistant", content=f"**Final answer:**\n{final_answer.to_string()}\n")
-        elif isinstance(final_answer, AgentImage):
-            yield gr.ChatMessage(role="assistant", content={"path": final_answer.to_string(), "mime_type": "image/png"})
-        elif isinstance(final_answer, AgentAudio):
-            yield gr.ChatMessage(role="assistant", content={"path": final_answer.to_string(), "mime_type": "audio/wav"})
-        else:
-            yield gr.ChatMessage(role="assistant", content=f"**Final answer:** {str(final_answer)}")
+    final_answer = step_log  # Last log is the run's final_answer
+    final_answer = handle_agent_output_types(final_answer)
 
     if isinstance(final_answer, AgentText):
         yield gr.ChatMessage(
             role="assistant",
-            content=f"**Final answer:**\n{final_answer.to_string().strip()}\n",
+            content=f"**Final answer:**\n{final_answer.to_string()}\n",
         )
     elif isinstance(final_answer, AgentImage):
         yield gr.ChatMessage(
@@ -124,6 +173,7 @@ def stream_to_gradio(
         )
     else:
         yield gr.ChatMessage(role="assistant", content=f"**Final answer:** {str(final_answer)}")
+
 
 class GradioUI:
     """A one-line interface to launch your agent in Gradio"""
@@ -145,9 +195,8 @@ class GradioUI:
         messages.append(gr.ChatMessage(role="user", content=prompt))
         yield messages
         for msg in stream_to_gradio(self.agent, task=prompt, reset_agent_memory=False):
-            if hasattr(msg, "content") and msg.content:
-                messages.append(msg)
-                yield messages
+            messages.append(msg)
+            yield messages
         yield messages
 
     def upload_file(
@@ -160,6 +209,9 @@ class GradioUI:
             "text/plain",
         ],
     ):
+        """
+        Handle file uploads, default allowed types are .pdf, .docx, and .txt
+        """
         import gradio as gr
 
         if file is None:
@@ -173,20 +225,23 @@ class GradioUI:
         if mime_type not in allowed_file_types:
             return gr.Textbox("File type disallowed", visible=True), file_uploads_log
 
+        # Sanitize file name
         original_name = os.path.basename(file.name)
         sanitized_name = re.sub(
             r"[^\w\-.]", "_", original_name
-        )
+        )  # Replace any non-alphanumeric, non-dash, or non-dot characters with underscores
 
         type_to_ext = {}
         for ext, t in mimetypes.types_map.items():
             if t not in type_to_ext:
                 type_to_ext[t] = ext
 
+        # Ensure the extension correlates to the mime type
         sanitized_name = sanitized_name.split(".")[:-1]
         sanitized_name.append("" + type_to_ext[mime_type])
         sanitized_name = "".join(sanitized_name)
 
+        # Save the uploaded file to the specified folder
         file_path = os.path.join(self.file_upload_folder, os.path.basename(sanitized_name))
         shutil.copy(file.name, file_path)
 
@@ -219,6 +274,7 @@ class GradioUI:
                 resizeable=True,
                 scale=1,
             )
+            # If an upload folder is provided, enable the upload feature
             if self.file_upload_folder is not None:
                 upload_file = gr.File(label="Upload a file")
                 upload_status = gr.Textbox(label="Upload Status", interactive=False, visible=False)

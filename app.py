@@ -1,165 +1,115 @@
-#!/usr/bin/env python
-# coding=utf-8
-# Copyright 2024 The HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-import datetime
-import pytz
-import yaml
-import os
-from typing import Any
-
-from smolagents.agents import MultiStepAgent, ActionStep
-from smolagents.memory import MemoryStep
-from smolagents.tools import tool
-from smolagents.agent_types import AgentText, AgentImage, AgentAudio, handle_agent_output_types
-from browser_use import Agent
+import ollama
+from smolagents import CodeAgent, tool
+from tools.final_answer import FinalAnswerTool
 from Gradio_UI import GradioUI
-from ollama import Client
+import yaml
+from transformers import pipeline
+import requests
 
-# Example custom tool
+# === Model Wrapper ===
+class OllamaModelWrapper:
+    def __init__(self, model_name: str):
+        self.model_name = model_name
+
+    def generate(self, prompt: str, **kwargs):
+        response = ollama.chat(
+            model=self.model_name,
+            messages=[{"role": "user", "content": str(prompt)}]
+        )
+        
+        print(response)
+
+        if 'text' in response:
+            return response['text']
+        elif 'message' in response:
+            return response['message']
+        else:
+            return "Unexpected response format"
+
+    def __call__(self, prompt: str, **kwargs):
+        return self.generate(prompt, **kwargs)
+
+# === Final Answer Tool ===
+final_answer = FinalAnswerTool()
+
+# === Tool: Buscar preços de produtos ===
 @tool
-def my_custom_tool(arg1: str, arg2: int) -> str:
-    """A tool that does nothing yet
-
+def search_prices_serpapi(product_name: str) -> str:
+    """
+    Searches for product prices on Google Shopping using SerpAPI.
+    
     Args:
-        arg1: the first argument
-        arg2: the second argument
-
+        product_name (str): The name of the product to search for (e.g. "iPhone 13 Pro")
+        
     Returns:
-        A placeholder string."""
-    return "What magic will you build?"
-
-@tool
-def get_current_time_in_timezone(timezone: str) -> str:
-    """Fetches the current local time in a specified timezone.
-
-    Args:
-        timezone: A string representing a valid timezone (e.g., 'America/New_York').
-
-    Returns:
-        A formatted string with the local time in the given timezone."""
+        str: A formatted string containing product information including:
+            - Title
+            - Price
+            - Store
+            - Link
+            
+    Example:
+        >>> search_prices_serpapi("iPhone 13 Pro")
+        '📱 Apple iPhone 13 Pro 128GB\n💰 Preço: R$ 5.499,00\n🏪 Loja: Magazine Luiza\n🔗 https://example.com'
+        
+    Raises:
+        Exception: If there's an error with the API request or response parsing
+    """
     try:
-        tz = pytz.timezone(timezone)
-        local_time = datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
-        return f"The current local time in {timezone} is: {local_time}"
-    except Exception as e:
-        return f"Error fetching time for timezone '{timezone}': {e}"
-
-@tool
-def comparar_produto_online(nome_produto: str) -> str:
-    """Compara preços de um produto em diferentes sites usando navegação automatizada.
-
-    Args:
-        nome_produto: Nome do produto a ser pesquisado e comparado.
-
-    Returns:
-        Uma string agregada contendo trechos dos resultados de busca de cada site."""
-    try:
-        browser = Agent()
-        sites = {
-            "OLX": f"https://www.olx.com.br/buscar?q={nome_produto}",
-            "Buscapé": f"https://www.buscape.com.br/search?q={nome_produto}",
-            "Magazine Luiza": f"https://www.magazineluiza.com.br/busca/{nome_produto}"
+        API_KEY = "b22ab4f321d68d5e5b17d298396e555de3b232beafe03d229b9860afc01257f8"
+        params = {
+            "engine": "google_shopping",
+            "q": product_name,
+            "hl": "pt-br",
+            "gl": "br",
+            "api_key": API_KEY
         }
 
-        resultados = []
-        for nome_site, url in sites.items():
-            browser.goto(url)
-            browser.wait_for_element("body")
-            page_content = browser.page_content
-            resultados.append(f"--- {nome_site} ---\n{page_content[:500]}...")
+        response = requests.get("https://serpapi.com/search", params=params)
+        data = response.json()
 
-        browser.close()
-        return "\n\n".join(resultados)
+        if "shopping_results" not in data:
+            return "Nenhum resultado encontrado."
+
+        results = []
+        for item in data["shopping_results"][:5]:  # Limita a 5 resultados
+            title = item.get("title", "Sem título")
+            
+            # Filtra resultados não relevantes
+            if product_name.split()[0].lower() not in title.lower():
+                continue
+                
+            price = item.get("price", "Preço não disponível")
+            link = item.get("link", "Link não disponível") if item.get("link") else "Link não disponível"
+            source = item.get("source", "Loja desconhecida")
+            
+            results.append(
+                f"📱 {title}\n"
+                f"💵 Preço: {price}\n"
+                f"🏬 Loja: {source}\n"
+                f"🔗 {link if link != 'Link não disponível' else 'Link indisponível'}\n"
+                f"―――――――――――――――――――"
+            )
+
+        return "\n\n".join(results) if results else "Nenhum resultado relevante encontrado."
 
     except Exception as e:
-        return f"Erro ao comparar produto '{nome_produto}': {e}"
+        return f"Erro na busca: {str(e)}"
 
-class OllamaAgent(MultiStepAgent):
-    """
-    Agente que usa o Ollama para gerar respostas.
-    """
-    def _step_stream(self, memory_step: MemoryStep):
-        """
-        For streaming: delegate to the synchronous step implementation.
-        """
-        result = self.step(memory_step)
-        yield result
-    """
-    Agente que usa o Ollama para gerar respostas.
-    """
-    def __init__(self, ollama_model: str = "llama2", **kwargs: Any):
-        super().__init__(model=None, **kwargs)
-        self.ollama_client = Client()
-        self.ollama_model = ollama_model
-
-    def step(self, step_log: MemoryStep) -> MemoryStep:
-        if not isinstance(step_log, ActionStep):
-            return step_log
-
-        llm_input = self.format_prompt(step_log)
-        response = self.ollama_client.generate(model=self.ollama_model, prompt=llm_input)
-        llm_response = response.get("response", "")
-        step_log.model_output = llm_response
-        return step_log
-
-    def initialize_system_prompt(self) -> str:
-        return "Você é um assistente útil."
-
-    def format_prompt(self, step_log: ActionStep) -> str:
-        prompt = ""
-        if getattr(step_log, 'thought', None):
-            prompt += f"Thought: {step_log.thought}\n"
-        if getattr(step_log, 'tool_calls', None):
-            for tool_call in step_log.tool_calls:
-                prompt += f"Action: {tool_call.name}({tool_call.arguments})\n"
-        prompt += "Observation: "
-        return prompt
-
-# Import DuckDuckGoSearchTool if available
-try:
-    from smolagents.tools import DuckDuckGoSearchTool
-    duckduckgo_tool = DuckDuckGoSearchTool()
-except ImportError:
-    duckduckgo_tool = None
-    print("DuckDuckGoSearchTool não encontrado; continue sem ela.")
-
-# Define image_generation_tool como None
-image_generation_tool = None
-
-# Carrega prompts
-template_path = os.path.join(os.path.dirname(__file__), "prompts.yaml")
-with open(template_path, "r") as stream:
+# === Carrega templates ===
+with open("prompts.yaml", 'r', encoding='utf-8') as stream:
     prompt_templates = yaml.safe_load(stream)
 
-# Lista de ferramentas
-tools = [
-    t for t in (duckduckgo_tool, image_generation_tool, comparar_produto_online) if t
-]
+# === Inicializa modelo e agente ===
+model = OllamaModelWrapper(model_name="qwen2.5:3b")
 
-# Inicializa o agente e a UI
-agent = OllamaAgent(
-    ollama_model="llama2",
-    tools=tools,
+agent = CodeAgent(
+    model=model,
+    tools=[final_answer, search_prices_serpapi],
     max_steps=6,
     verbosity_level=1,
-    grammar=None,
-    planning_interval=None,
-    name=None,
-    description=None,
-    prompt_templates=prompt_templates,
+    prompt_templates=prompt_templates
 )
 
+# === Interface ===
 GradioUI(agent).launch()
