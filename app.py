@@ -6,7 +6,7 @@ import yaml
 from transformers import pipeline
 import requests
 
-# === Model Wrapper ===
+# Model Wrapper
 class OllamaModelWrapper:
     def __init__(self, model_name: str):
         self.model_name = model_name
@@ -16,8 +16,6 @@ class OllamaModelWrapper:
             model=self.model_name,
             messages=[{"role": "user", "content": str(prompt)}]
         )
-        
-        print(response)
 
         if 'text' in response:
             return response['text']
@@ -29,10 +27,10 @@ class OllamaModelWrapper:
     def __call__(self, prompt: str, **kwargs):
         return self.generate(prompt, **kwargs)
 
-# === Final Answer Tool ===
+# Final Answer Tool
 final_answer = FinalAnswerTool()
 
-# === Tool: Buscar preços de produtos ===
+# Tool: Buscar preços de produtos
 @tool
 def search_prices_serpapi(product_name: str) -> str:
     """
@@ -50,7 +48,7 @@ def search_prices_serpapi(product_name: str) -> str:
             
     Example:
         >>> search_prices_serpapi("iPhone 13 Pro")
-        '📱 Apple iPhone 13 Pro 128GB\n💰 Preço: R$ 5.499,00\n🏪 Loja: Magazine Luiza\n🔗 https://example.com'
+        '📱 Apple iPhone 13 Pro 128GB💰 Preço: R$ 5.499,00🏪 Loja: Magazine Luiza🔗 https://example.com'
         
     Raises:
         Exception: If there's an error with the API request or response parsing
@@ -80,27 +78,27 @@ def search_prices_serpapi(product_name: str) -> str:
                 continue
                 
             price = item.get("price", "Preço não disponível")
-            link = item.get("link", "Link não disponível") if item.get("link") else "Link não disponível"
+            link = item.get("link", "Link não disponível") 
             source = item.get("source", "Loja desconhecida")
             
             results.append(
-                f"📱 {title}\n"
-                f"💵 Preço: {price}\n"
-                f"🏬 Loja: {source}\n"
-                f"🔗 {link if link != 'Link não disponível' else 'Link indisponível'}\n"
+                f"<br/>📱 {title}<br/>"
+                f"💵 Preço: {price}<br/>"
+                f"🏬 Loja: {source}<br/>"
+                f"🔗 {link}<br/>"
                 f"―――――――――――――――――――"
             )
 
-        return "\n\n".join(results) if results else "Nenhum resultado relevante encontrado."
+        return "<br/>".join(results) if results else "Nenhum resultado relevante encontrado."
 
     except Exception as e:
         return f"Erro na busca: {str(e)}"
 
-# === Carrega templates ===
+# Carrega templates
 with open("prompts.yaml", 'r', encoding='utf-8') as stream:
     prompt_templates = yaml.safe_load(stream)
 
-# === Inicializa modelo e agente ===
+# Inicializa modelo e agente 
 model = OllamaModelWrapper(model_name="qwen2.5:3b")
 
 agent = CodeAgent(
@@ -111,5 +109,5 @@ agent = CodeAgent(
     prompt_templates=prompt_templates
 )
 
-# === Interface ===
+# Interface
 GradioUI(agent).launch()
